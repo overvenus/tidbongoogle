@@ -1,0 +1,6 @@
+drive-root-id = "10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1"
+
+[google]
+credentials = "var/credentials.json"
+drive-token-file = "var/driverwtoken.json"
+sheet-token-file = "var/sheetrwtoken.json"
