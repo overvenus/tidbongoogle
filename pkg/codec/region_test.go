@@ -59,4 +59,12 @@ func TestRaftLogEncodeDecode(t *testing.T) {
 			}
 		}
 	}
+
+	if EncodeRaftLog(99, 99) >= EncodeRaftLog(100, 100) {
+		t.Fatal("99 must be less than 100", EncodeRaftLog(99, 99), EncodeRaftLog(100, 1000))
+	}
+
+	if EncodeRaftLog(0xff, 0xff) >= EncodeRaftLog(0x100, 0x100) {
+		t.Fatal("0xff must be less than 0x100", EncodeRaftLog(99, 99), EncodeRaftLog(100, 1000))
+	}
 }

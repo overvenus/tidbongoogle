@@ -21,11 +21,11 @@ func DecodeRegionFolder(name string) (uint64, uint64, error) {
 	if len(seqs) != 3 || seqs[0] != regionPrefix {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
-	rid, err := strconv.Atoi(seqs[1])
+	rid, err := strconv.ParseUint(seqs[1], 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
-	pid, err := strconv.Atoi(seqs[2])
+	pid, err := strconv.ParseUint(seqs[2], 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
@@ -34,7 +34,7 @@ func DecodeRegionFolder(name string) (uint64, uint64, error) {
 
 // EncodeRegionFolder encode region id and peer id to a region folder name
 func EncodeRegionFolder(regionID, peerID uint64) string {
-	return fmt.Sprintf("%s%s%d%s%d",
+	return fmt.Sprintf("%s%s%016x%s%016x",
 		regionPrefix, commonSEP, regionID, commonSEP, peerID)
 }
 
@@ -45,11 +45,11 @@ func DecodeSnapFolder(name string) (uint64, uint64, error) {
 	if len(seqs) != 3 || seqs[0] != snapPrefix {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
-	rid, err := strconv.Atoi(seqs[1])
+	rid, err := strconv.ParseUint(seqs[1], 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
-	pid, err := strconv.Atoi(seqs[2])
+	pid, err := strconv.ParseUint(seqs[2], 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
@@ -58,7 +58,7 @@ func DecodeSnapFolder(name string) (uint64, uint64, error) {
 
 // EncodeSnapFolder encode region id and peer id to a snap folder name
 func EncodeSnapFolder(regionID, peerID uint64) string {
-	return fmt.Sprintf("%s%s%d%s%d",
+	return fmt.Sprintf("%s%s%016x%s%016x",
 		snapPrefix, commonSEP, regionID, commonSEP, peerID)
 }
 
@@ -69,15 +69,15 @@ func DecodeSnapshotFolder(name string) (uint64, uint64, uint64, error) {
 	if len(seqs) != 4 || seqs[0] != snapshotPerfix {
 		return 0, 0, 0, fmt.Errorf("%s", name)
 	}
-	applied, err := strconv.Atoi(seqs[1])
+	applied, err := strconv.ParseUint(seqs[1], 16, 64)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("%s", name)
 	}
-	truncated, err := strconv.Atoi(seqs[2])
+	truncated, err := strconv.ParseUint(seqs[2], 16, 64)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("%s", name)
 	}
-	term, err := strconv.Atoi(seqs[3])
+	term, err := strconv.ParseUint(seqs[3], 16, 64)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("%s", name)
 	}
@@ -87,7 +87,7 @@ func DecodeSnapshotFolder(name string) (uint64, uint64, uint64, error) {
 // EncodeSnapshotFolder encode applied idx, truncated idx and term to
 // a snapshot folder name.
 func EncodeSnapshotFolder(appliedIdx, truncatedIdx, term uint64) string {
-	return fmt.Sprintf("%s%s%d%s%d%s%d",
+	return fmt.Sprintf("%s%s%016x%s%016x%s%016x",
 		snapshotPerfix, commonSEP, appliedIdx, commonSEP, truncatedIdx, commonSEP, term)
 }
 
@@ -97,11 +97,11 @@ func DecodeRaftLog(name string) (uint64, uint64, error) {
 	if len(seqs) != 3 || seqs[0] != raftLogPrefix {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
-	term, err := strconv.Atoi(seqs[1])
+	term, err := strconv.ParseUint(seqs[1], 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
-	index, err := strconv.Atoi(seqs[2])
+	index, err := strconv.ParseUint(seqs[2], 16, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("%s", name)
 	}
@@ -110,6 +110,6 @@ func DecodeRaftLog(name string) (uint64, uint64, error) {
 
 // EncodeRaftLog encode term and index to a file name
 func EncodeRaftLog(term, index uint64) string {
-	return fmt.Sprintf("%s%s%d%s%d",
+	return fmt.Sprintf("%s%s%016x%s%016x",
 		raftLogPrefix, commonSEP, term, commonSEP, index)
 }

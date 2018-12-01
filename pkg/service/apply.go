@@ -29,16 +29,31 @@ type regionStore struct {
 	id uint64
 	// peer id
 	peerID uint64
-	// applied (saved) index
-	appiledIndex uint64
-	appliedTerm  uint64
 	// root folder id of a region
 	regionFolderID string
 	// snapshot folder id of a region
 	snapFolderID string
+
+	// applied (saved) index
+	appiledIndex uint64
+	appliedTerm  uint64
 }
 
-func (store *regionStore) MakeResponse() *enginepb.CommandResponse {
+func (store *regionStore) advance(appliedIndex, appliedTerm uint64) {
+	log.Infof("[region %d] advance applied term to %d, applied index to %d",
+		store.id, appliedTerm, appliedIndex)
+	if store.appiledIndex > appliedIndex {
+		log.Errorf("[region %d] advance backward, term from %d to %d, index from %d to %d",
+			store.id, store.appliedTerm, appliedTerm, store.appiledIndex, appliedIndex)
+	}
+	store.appiledIndex = appliedIndex
+	store.appliedTerm = appliedTerm
+}
+
+func (store *regionStore) makeResponse() *enginepb.CommandResponse {
+	log.Infof("[region %d] make response with applied term %d, applied index %d",
+		store.id, store.appliedTerm, store.appiledIndex)
+
 	return &enginepb.CommandResponse{
 		Header: &enginepb.CommandResponseHeader{
 			RegionId: store.id,
@@ -101,37 +116,41 @@ func (app *Applier) start() error {
 }
 
 func (app *Applier) apply(driveCli *googleutil.DriveClient) {
-	timer := time.NewTimer(app.cfg.ReportInterval.Duration)
+	ticker := time.NewTicker(app.cfg.ReportInterval.Duration)
 	for {
 		select {
 		case <-app.ctx.Done():
 			log.Infof("applier quit ...")
 			return
-		case <-timer.C:
+		case <-ticker.C:
 			log.Infof("time to report applied state")
+			if len(app.regions) == 0 {
+				continue
+			}
 			respBatch := &enginepb.CommandResponseBatch{
 				Responses: make([]*enginepb.CommandResponse, 0, len(app.regions)),
 			}
 			for _, store := range app.regions {
-				resp := store.MakeResponse()
+				resp := store.makeResponse()
 				respBatch.Responses = append(respBatch.Responses, resp)
 			}
 			app.cmdRespCh <- respBatch
-			timer = time.NewTimer(app.cfg.ReportInterval.Duration)
+
 		case snap := <-app.snapCh:
 			// We have created a region folder in google drive,
 			// then we add the region to regions map.
-			app.regions[snap.regionID] = &regionStore{
+			store := regionStore{
 				// region id
 				id: snap.regionID,
 				// peer id
 				peerID: snap.peerID,
-				// applied (saved) index
-				appiledIndex: snap.appliedIndex,
-				appliedTerm:  snap.appliedTerm,
 				// root folder id of a region
 				regionFolderID: snap.regionFolderID,
 			}
+			// applied (saved) index
+			store.advance(snap.appliedIndex, snap.appliedTerm)
+			app.regions[snap.regionID] = &store
+
 		case batch := <-app.cmdReqCh:
 			respBatch := &enginepb.CommandResponseBatch{
 				Responses: make([]*enginepb.CommandResponse, 0, len(batch.Requests)),
@@ -152,6 +171,8 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				}
 				// TODO: support region split
 				b, err := proto.Marshal(cmd)
+				log.Infof("[region %d] log at term %d index %d size %d",
+					regionID, term, index, len(b))
 				if err != nil {
 					log.Warnf("[region %d] fail to marshal snapshop state", err)
 				}
@@ -166,9 +187,11 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				log.Infof(
 					"[region %d] raft log at index %d term %d applied, ID: %s",
 					regionID, index, term, logFile.Id)
+				store.advance(index, term)
 
-				resp := store.MakeResponse()
+				resp := store.makeResponse()
 				respBatch.Responses = append(respBatch.Responses, resp)
+
 			}
 			app.cmdRespCh <- respBatch
 		}
@@ -219,8 +242,7 @@ func (app *Applier) restore(driveCli *googleutil.DriveClient) error {
 				log.Errorf("[region %d] fail to decode raft log %v", regionID, err)
 				return err
 			}
-			store.appiledIndex = index
-			store.appliedTerm = term
+			store.advance(index, term)
 		} else if flen == 1 {
 			// It must be a snap folder.
 			store.snapFolderID = fl.Files[0].Id

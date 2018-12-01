@@ -1,4 +1,4 @@
-report-interval = "1m49s"
+report-interval = "10s"
 drive-root-id = "10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1"
 
 [google]

@@ -100,7 +100,7 @@ func (cli *DriveClient) CreateFile(
 		Parents:  []string{parent},
 		MimeType: "application/octet-stream",
 	}
-	file, err := cli.Drive.Files.Create(&f).Do()
+	file, err := cli.Drive.Files.Create(&f).Media(body).Do()
 	if err != nil {
 		return nil, err
 	}
