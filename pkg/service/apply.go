@@ -10,6 +10,7 @@ import (
 
 	"github.com/overvenus/tidbongoogle/pkg/codec"
 	"github.com/overvenus/tidbongoogle/pkg/googleutil"
+	"github.com/overvenus/tidbongoogle/pkg/sheet"
 	"github.com/pingcap/kvproto/pkg/enginepb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
@@ -81,6 +82,8 @@ type Applier struct {
 	snapCh    chan *snapshot
 	cmdReqCh  chan *enginepb.CommandRequestBatch
 	cmdRespCh chan *enginepb.CommandResponseBatch
+
+	decoder *sheet.Decoder
 }
 
 // NewApplier creates an Applier.
@@ -92,7 +95,7 @@ func NewApplier(ctx context.Context, cfg *Config) *Applier {
 	app.snapCh = make(chan *snapshot, 10)
 	app.cmdReqCh = make(chan *enginepb.CommandRequestBatch, 10)
 	app.cmdRespCh = make(chan *enginepb.CommandResponseBatch, 10)
-
+	app.decoder = sheet.NewDecoder()
 	app.start()
 	return app
 }
@@ -115,6 +118,8 @@ func (app *Applier) start() error {
 	if err := app.restore(driveCli); err != nil {
 		return err
 	}
+	app.decoder.Do()
+	app.decoder.AutoSync()
 	go app.apply(driveCli)
 	log.Info("starting applier done")
 	return nil
@@ -122,6 +127,7 @@ func (app *Applier) start() error {
 
 func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 	ticker := time.NewTicker(app.cfg.ReportInterval.Duration)
+
 	for {
 		select {
 		case <-app.ctx.Done():
@@ -190,6 +196,9 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				if err != nil {
 					log.Warnf("[region %d] fail to marshal snapshop state", err)
 				}
+
+				app.decoder.Decode(b)
+
 				cmdName := codec.EncodeRaftLog(term, index)
 				logFile, err := driveCli.CreateFile(
 					cmdName, store.regionFolderID, b)
