@@ -3,11 +3,15 @@ package gsuite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
+
+	"github.com/overvenus/tidbongoogle/pkg/googleutil"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -70,6 +74,8 @@ func saveToken(path string, token *oauth2.Token) {
 }
 
 var Srv *sheets.Service
+var db2id map[string]string
+var gclient *googleutil.DriveClient
 
 func init() {
 	b, err := ioutil.ReadFile("var/credentials.json")
@@ -93,18 +99,100 @@ func init() {
 	}
 }
 
+func InitGClient(client *googleutil.DriveClient) {
+	gclient = client
+}
+
+func GetSheetID(name string) string {
+	id, ok := db2id[name]
+	if !ok || id == "" {
+		did, err := gclient.FindOrCreateFile("", name, "application/vnd.google-apps.spreadsheet")
+		if err != nil {
+			return ""
+		}
+		db2id[name] = did
+		return did
+	}
+	return id
+}
+
 func Create(db string, data map[string][][]string) error {
-	qry := &sheets.Spreadsheet{
-		Properties: &sheets.SpreadsheetProperties{
-			AutoRecalc: "ON_CHANGE",
-			Title:      db,
-		},
-		Sheets: make([]*sheets.Sheet, 0),
+	sheetid := GetSheetID(db)
+	if sheetid == "" {
+		return errors.New("Cannot get sheetid")
 	}
+
+	currentSheet, err := Srv.Spreadsheets.Get(sheetid).Do()
+	if err != nil {
+		return err
+	}
+
+	currentTables := make(map[string]int64, 0)
+	for _, v := range currentSheet.Sheets {
+		currentTables[v.Properties.Title] = v.Properties.SheetId
+	}
+
+	newTables := make(map[string]int64, 0)
+	for k, _ := range data {
+		oldId, ok := currentTables[k]
+		if !ok {
+			newTables[k] = -1
+		} else {
+			newTables[k] = oldId
+		}
+	}
+
+	req := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: make([]*sheets.Request, 0),
+	}
+
 	for k, v := range data {
-		qry.Sheets = append(qry.Sheets, toSheetData(k, v))
+		newid := newTables[k]
+		tsheets := toSheetData(k, v)
+		if newid != -1 {
+			req.Requests = append(req.Requests, &sheets.Request{
+				DeleteRange: &sheets.DeleteRangeRequest{
+					Range: &sheets.GridRange{
+						SheetId: newid,
+					},
+				},
+			})
+		} else {
+			req.Requests = append(req.Requests, &sheets.Request{
+				AddSheet: &sheets.AddSheetRequest{
+					Properties: &sheets.SheetProperties{
+						SheetId: rand.Int63(),
+						Title:   k,
+					},
+				},
+			})
+		}
+		req.Requests = append(req.Requests, &sheets.Request{
+			UpdateCells: &sheets.UpdateCellsRequest{
+				Rows: tsheets.Data[0].RowData,
+				Start: &sheets.GridCoordinate{
+					SheetId:     newid,
+					RowIndex:    0,
+					ColumnIndex: 0,
+				},
+				Range: &sheets.GridRange{
+					SheetId: newid,
+				},
+			},
+		})
 	}
-	Srv.Spreadsheets.Create(qry).Do()
+
+	for k, v := range currentTables {
+		_, ok := newTables[k]
+		if !ok {
+			req.Requests = append(req.Requests, &sheets.Request{
+				DeleteSheet: &sheets.DeleteSheetRequest{
+					SheetId: v,
+				},
+			})
+		}
+	}
+	Srv.Spreadsheets.BatchUpdate(sheetid, req).Do()
 	return nil
 }
 

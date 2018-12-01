@@ -144,6 +144,35 @@ func (cli *DriveClient) ListFile(parent string, limit int64) (*drive.FileList, e
 	return cli.list(q, limit, "")
 }
 
+func (cli *DriveClient) CreateFileMime(parent, name, mime string) (string, error) {
+	f := drive.File{
+		Name:     name,
+		Parents:  []string{parent},
+		MimeType: mime,
+	}
+	file, err := cli.Drive.Files.Create(&f).Do()
+	if err != nil {
+		return "", err
+	}
+	return file.Id, nil
+}
+
+func (cli *DriveClient) FindOrCreateFile(parent, name, mime string) (string, error) {
+	if parent == "" {
+		parent = cli.Root
+	}
+	q := fmt.Sprintf("mimeType='%s' AND '%s' in parents AND name = '%s'", mime, parent, name)
+	res, err := cli.list(q, 1, "")
+	if err != nil {
+		return "", err
+	}
+	if len(res.Files) == 0 {
+		return cli.CreateFileMime(parent, name, mime)
+	} else {
+		return res.Files[0].Id, nil
+	}
+}
+
 // ListFileByNameDesc list files order by name desc, include folders.
 func (cli *DriveClient) ListFileByNameDesc(parent string, limit int64) (*drive.FileList, error) {
 	if parent == "" {

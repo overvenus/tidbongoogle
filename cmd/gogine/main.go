@@ -10,7 +10,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/overvenus/tidbongoogle/pkg/googleutil"
+
 	"github.com/BurntSushi/toml"
+	"github.com/overvenus/tidbongoogle/pkg/gsuite"
 	"github.com/overvenus/tidbongoogle/pkg/service"
 	"github.com/pingcap/kvproto/pkg/enginepb"
 	log "github.com/sirupsen/logrus"
@@ -35,6 +38,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	gsuite.InitGClient(googleutil.NewDriveClient(&cfg.Google, cfg.DriveRootID, 5))
+
 	go func() {
 		s := <-sigs
 		log.Infof("capture a signal %s, quit ...", s)
