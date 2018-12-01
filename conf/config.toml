@@ -1,5 +1,6 @@
 report-interval = "10s"
 drive-root-id = "10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1"
+max-retry = 5
 
 [google]
 credentials = "var/credentials.json"

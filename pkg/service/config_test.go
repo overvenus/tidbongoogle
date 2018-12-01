@@ -11,6 +11,7 @@ func TestConfigToml(t *testing.T) {
 	sample := `
 report-interval = "1m49s"
 drive-root-id = "0B8BymDS1DJPAZVFvMDdZSmNMaak"
+max-retry = 8897
 
 [google]
 credentials = "var/cred.json"
@@ -21,6 +22,9 @@ sheet-token-file = "var/stok.json"
 	_, err := toml.Decode(sample, cfg)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.MaxRetry != 8897 {
+		t.Fatalf("want %#v, got %#v", sample, cfg)
 	}
 	if cfg.ReportInterval.Duration != time.Minute+time.Second*49 {
 		t.Fatalf("want %#v, got %#v", sample, cfg)

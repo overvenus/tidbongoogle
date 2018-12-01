@@ -3,17 +3,21 @@ package service
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gogo/protobuf/proto"
+	drive "google.golang.org/api/drive/v3"
 
 	"github.com/overvenus/tidbongoogle/pkg/codec"
 	"github.com/overvenus/tidbongoogle/pkg/googleutil"
 	"github.com/pingcap/kvproto/pkg/enginepb"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	log "github.com/sirupsen/logrus"
 )
+
+const raftInitLogTerm = uint64(5)
+const raftInitLogIndex = uint64(5)
 
 type snapshot struct {
 	regionID     uint64
@@ -106,7 +110,8 @@ func (app *Applier) RequestBatchChannel() chan<- *enginepb.CommandRequestBatch {
 // start the applier.
 func (app *Applier) start() error {
 	log.Info("starting applier ...")
-	driveCli := googleutil.NewDriveClient(&app.cfg.Google, app.cfg.DriveRootID)
+	driveCli := googleutil.NewDriveClient(
+		&app.cfg.Google, app.cfg.DriveRootID, app.cfg.MaxRetry)
 	if err := app.restore(driveCli); err != nil {
 		return err
 	}
@@ -169,7 +174,16 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 					log.Errorf("[region %d] region store not found", regionID)
 					continue
 				}
-				// TODO: support region split
+				// support region split
+				if cmd.AdminRequest != nil {
+					switch cmd.AdminRequest.CmdType {
+					case raft_cmdpb.AdminCmdType_BatchSplit:
+						app.handleSplits(driveCli, regionID,
+							cmd.AdminRequest.Splits, cmd.AdminResponse.Splits)
+					default:
+					}
+				}
+
 				b, err := proto.Marshal(cmd)
 				log.Infof("[region %d] log at term %d index %d size %d",
 					regionID, term, index, len(b))
@@ -178,15 +192,16 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				}
 				cmdName := codec.EncodeRaftLog(term, index)
 				logFile, err := driveCli.CreateFile(
-					cmdName, store.regionFolderID, strings.NewReader(string(b)))
+					cmdName, store.regionFolderID, b)
 				if err != nil {
 					log.Errorf(
 						"[region %d] fail to save raft log at index %d term %d",
 						regionID, index, term)
+				} else {
+					log.Infof(
+						"[region %d] raft log at index %d term %d applied, ID: %s",
+						regionID, index, term, logFile.Id)
 				}
-				log.Infof(
-					"[region %d] raft log at index %d term %d applied, ID: %s",
-					regionID, index, term, logFile.Id)
 				store.advance(index, term)
 
 				resp := store.makeResponse()
@@ -196,6 +211,49 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 			app.cmdRespCh <- respBatch
 		}
 	}
+}
+
+func (app *Applier) handleSplits(
+	driveCli *googleutil.DriveClient,
+	originalRegionID uint64,
+	req *raft_cmdpb.BatchSplitRequest, resp *raft_cmdpb.BatchSplitResponse,
+) error {
+	// TODO: create folders then update mem state.
+	log.Infof(
+		"[region %d] exec %v, new regions %+v",
+		originalRegionID, req, resp.Regions,
+	)
+	for _, region := range resp.Regions {
+		if region.Id == originalRegionID {
+			log.Infof(
+				"[region %d] split skip original region %+v",
+				originalRegionID, region,
+			)
+			continue
+		}
+		var peerID uint64
+		for _, pr := range region.Peers {
+			// HACK: all peers in the this store are learners.
+			if pr.IsLearner {
+				peerID = pr.Id
+			}
+		}
+		// Create a region folder.
+		regionFolder, snapFolder, err := maybeCreateRegionFolder(
+			driveCli, driveCli.Root, region.Id, peerID)
+		if err != nil {
+			log.Errorf("[region %d] fail to create snap folder", region.Id)
+			return err
+		}
+		store := new(regionStore)
+		store.id = region.Id
+		store.peerID = peerID
+		store.regionFolderID = regionFolder.Id
+		store.snapFolderID = snapFolder.Id
+		store.advance(raftInitLogIndex, raftInitLogTerm)
+		app.regions[region.Id] = store
+	}
+	return nil
 }
 
 // Layout of a region folder:
@@ -252,7 +310,7 @@ func (app *Applier) restore(driveCli *googleutil.DriveClient) error {
 			log.Infof("[region %d] empty region folder", regionID)
 			continue
 		}
-		log.Infof("[region %d] restore store %#v", regionID, store)
+		log.Infof("[region %d] restore store %+v", regionID, store)
 		app.regions[regionID] = &store
 	}
 	log.Info("restore region apply state done")
@@ -282,7 +340,8 @@ func (app *Applier) NewSnapper() *Snapper {
 	snapper := new(Snapper)
 	snapper.driveRootID = app.cfg.DriveRootID
 	snapper.snapCh = app.snapCh
-	snapper.driveCli = googleutil.NewDriveClient(&app.cfg.Google, app.cfg.DriveRootID)
+	snapper.driveCli = googleutil.NewDriveClient(
+		&app.cfg.Google, app.cfg.DriveRootID, app.cfg.MaxRetry)
 	return snapper
 }
 
@@ -293,26 +352,14 @@ func (snap *Snapper) HandleSnapshotState(state *enginepb.SnapshotState) error {
 	snap.appliedIndex = state.ApplyState.TruncatedState.Index
 	snap.appliedTerm = state.ApplyState.TruncatedState.Term
 
-	log.Infof("[region %d] start apply snaphot, %#v", snap.regionID, state)
-
-	// First we try to create a new folder for the region.
-	regionFolderName := codec.EncodeRegionFolder(snap.regionID, snap.peerID)
-	// See if it is already exists.
-	regionFolder, _, err := snap.driveCli.MaybeCreateFolder(regionFolderName, snap.driveRootID)
-	if err != nil {
-		log.Errorf("[region %d] fail to create region folder", snap.regionID)
-		return err
-	}
-	snap.regionFolderID = regionFolder.Id
-
-	// Second we try to create a folder for save all snapshots.
-	snapFolderName := codec.EncodeSnapFolder(snap.regionID, snap.peerID)
-	snapFolder, _, err := snap.driveCli.MaybeCreateFolder(
-		snapFolderName, snap.regionFolderID) // Put snap folder in region folder.
+	// Create a region folder.
+	regionFolder, snapFolder, err := maybeCreateRegionFolder(
+		snap.driveCli, snap.driveRootID, snap.regionID, snap.peerID)
 	if err != nil {
 		log.Errorf("[region %d] fail to create snap folder", snap.regionID)
 		return err
 	}
+	snap.regionFolderID = regionFolder.Id
 	snap.snapFolderID = snapFolder.Id
 
 	// 3rd we create a snapshot folder to store the snapshot.
@@ -339,7 +386,7 @@ func (snap *Snapper) HandleSnapshotState(state *enginepb.SnapshotState) error {
 	_, err = snap.driveCli.CreateFile(
 		"state",
 		snap.snapshotFolderID, // Put snapshot state in its snapshot folder.
-		strings.NewReader(string(b)),
+		b,
 	)
 	if err != nil {
 		log.Errorf("[region %d] fail to save snapshop state", err)
@@ -363,7 +410,7 @@ func (snap *Snapper) HandleSnapshotData(state *enginepb.SnapshotData) error {
 	_, err = snap.driveCli.CreateFile(
 		chunkName,
 		snap.snapshotFolderID, // Put snapshot data in its snapshot folder.
-		strings.NewReader(string(b)),
+		b,
 	)
 	if err != nil {
 		log.Errorf("[region %d] fail to save snapshop state", err)
@@ -383,6 +430,33 @@ func (snap *Snapper) Done() *enginepb.SnapshotDone {
 		regionFolderID: snap.regionFolderID,
 	}
 	snap.snapCh <- &s
-	log.Infof("[region %d] snapshot done, %#v", snap.regionID, snap)
+	log.Infof("[region %d] snapshot done, %+v", snap.regionID, snap)
 	return new(enginepb.SnapshotDone)
+}
+
+// maybeCreateRegionFolder creates a region folder.
+func maybeCreateRegionFolder(
+	driveCli *googleutil.DriveClient, driveRootID string, regionID uint64, peerID uint64,
+) (*drive.File, *drive.File, error) {
+	log.Infof("[region %d] start create region folder ...", regionID)
+
+	// First we try to create a new folder for the region.
+	regionFolderName := codec.EncodeRegionFolder(regionID, peerID)
+	// See if it is already exists.
+	regionFolder, _, err := driveCli.MaybeCreateFolder(regionFolderName, driveRootID)
+	if err != nil {
+		log.Errorf("[region %d] fail to create region folder", regionID)
+		return nil, nil, err
+	}
+
+	// Second we try to create a folder for save all snapshots.
+	snapFolderName := codec.EncodeSnapFolder(regionID, peerID)
+	snapFolder, _, err := driveCli.MaybeCreateFolder(
+		snapFolderName, regionFolder.Id) // Put snap folder in region folder.
+	if err != nil {
+		log.Errorf("[region %d] fail to create snap folder", regionID)
+		return nil, nil, err
+	}
+
+	return regionFolder, snapFolder, nil
 }

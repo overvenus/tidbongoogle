@@ -15,6 +15,8 @@ type Config struct {
 	// Report interval
 	ReportInterval util.Duration `toml:"report-interval"`
 
+	MaxRetry int `toml:"max-retry"`
+
 	// The ID of a drive fold that store all region data.
 	DriveRootID string `toml:"drive-root-id"`
 	// Google config

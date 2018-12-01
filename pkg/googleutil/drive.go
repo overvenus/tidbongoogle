@@ -2,8 +2,8 @@ package googleutil
 
 import (
 	"fmt"
-	"io"
 	"io/ioutil"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2/google"
@@ -12,12 +12,13 @@ import (
 
 // DriveClient is a wraper of dirve service.
 type DriveClient struct {
-	Drive *drive.Service
-	Root  string
+	Drive    *drive.Service
+	Root     string
+	MaxRetry int
 }
 
 // NewDriveClient creats a drive client.
-func NewDriveClient(cfg *Config, root string) *DriveClient {
+func NewDriveClient(cfg *Config, root string, maxRetry int) *DriveClient {
 	b, err := ioutil.ReadFile(cfg.Credentials)
 	if err != nil {
 		log.Fatalf("Unable to read client secret file: %v", err)
@@ -36,8 +37,9 @@ func NewDriveClient(cfg *Config, root string) *DriveClient {
 		log.Fatalf("Unable to retrieve Drive client: %v", err)
 	}
 	return &DriveClient{
-		Drive: srv,
-		Root:  root,
+		Drive:    srv,
+		Root:     root,
+		MaxRetry: maxRetry,
 	}
 }
 
@@ -89,22 +91,28 @@ func (cli *DriveClient) MaybeCreateFolder(
 
 // CreateFile creates a file named `name` in the folder `parent`.
 func (cli *DriveClient) CreateFile(
-	name, parent string, body io.Reader,
+	name, parent string, body []byte,
 ) (*drive.File, error) {
 	// Use root as default, if parent id is empty.
 	if parent == "" {
 		parent = cli.Root
 	}
-	f := drive.File{
-		Name:     name,
-		Parents:  []string{parent},
-		MimeType: "application/octet-stream",
+	for i := 0; i < cli.MaxRetry; i++ {
+		f := drive.File{
+			Name:     name,
+			Parents:  []string{parent},
+			MimeType: "application/octet-stream",
+		}
+		file, err := cli.Drive.Files.Create(&f).
+			Media(strings.NewReader(string(body))).Do()
+		if err != nil {
+			log.Warnf("fail to create file %s in folder %s, err %s, retry...", name, parent, err)
+			continue
+		}
+		return file, nil
 	}
-	file, err := cli.Drive.Files.Create(&f).Media(body).Do()
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
+	log.Errorf("fail to create file %s in folder %s", name, parent)
+	return nil, fmt.Errorf("fail to create file %s in folder %s", name, parent)
 }
 
 // q: A query for filtering the file results.
