@@ -3,16 +3,12 @@ package googleutil
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/drive/v3"
-	sheets "google.golang.org/api/sheets/v4"
 )
 
 // Retrieve a token, saves the token, then returns the generated client.
@@ -74,48 +70,4 @@ type Config struct {
 	// time.
 	DriveTokenFile string `toml:"drive-token-file"`
 	SheetTokenFile string `toml:"sheet-token-file"`
-}
-
-// CreateDriveClient creats a drive service.
-func CreateDriveClient(cfg *Config) *drive.Service {
-	b, err := ioutil.ReadFile(cfg.Credentials)
-	if err != nil {
-		log.Fatalf("Unable to read client secret file: %v", err)
-	}
-
-	// If modifying these scopes, delete your previously saved token.json.
-	config, err := google.ConfigFromJSON(b, drive.DriveScope,
-		drive.DriveAppdataScope, drive.DriveFileScope, drive.DriveMetadataScope)
-	if err != nil {
-		log.Fatalf("Unable to parse client secret file to config: %v", err)
-	}
-	client := getClient(config, cfg.DriveTokenFile)
-
-	srv, err := drive.New(client)
-	if err != nil {
-		log.Fatalf("Unable to retrieve Drive client: %v", err)
-	}
-	return srv
-}
-
-// CreateSheetClient creats a sheet service.
-func CreateSheetClient(cfg *Config) *sheets.Service {
-	b, err := ioutil.ReadFile(cfg.Credentials)
-	if err != nil {
-		log.Fatalf("Unable to read client secret file: %v", err)
-	}
-
-	// If modifying these scopes, delete your previously saved token.json.
-	config, err := google.ConfigFromJSON(b,
-		sheets.DriveScope, sheets.DriveFileScope, sheets.SpreadsheetsScope)
-	if err != nil {
-		log.Fatalf("Unable to parse client secret file to config: %v", err)
-	}
-	client := getClient(config, cfg.SheetTokenFile)
-
-	srv, err := sheets.New(client)
-	if err != nil {
-		log.Fatalf("Unable to retrieve Sheets client: %v", err)
-	}
-	return srv
 }

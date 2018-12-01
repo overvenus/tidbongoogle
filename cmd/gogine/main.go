@@ -24,6 +24,8 @@ var (
 )
 
 func main() {
+	flag.Parse()
+
 	cfg := new(service.Config)
 	if _, err := toml.DecodeFile(*cfgFile, cfg); err != nil {
 		log.Fatalf("fail to parse config file %v", err)
@@ -50,7 +52,11 @@ func main() {
 	}
 	s := grpc.NewServer()
 	go func() {
-		svc := service.CreateEngineService(ctx, cfg)
+		sctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		applier := service.NewApplier(sctx, cfg)
+		svc := service.CreateEngineService(sctx, applier)
 		enginepb.RegisterEngineServer(s, svc)
 
 		log.Infof("create gRPC server, listens on %s", *addr)
@@ -61,6 +67,5 @@ func main() {
 
 	<-ctx.Done()
 	log.Infof("shutdown grpc server ...")
-	s.GracefulStop()
 	log.Infof("Bye")
 }

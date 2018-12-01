@@ -3,7 +3,7 @@ module github.com/overvenus/tidbongoogle
 require (
 	cloud.google.com/go v0.33.1 // indirect
 	github.com/BurntSushi/toml v0.3.1
-	github.com/gogo/protobuf v1.1.1 // indirect
+	github.com/gogo/protobuf v1.1.1
 	github.com/pingcap/kvproto v0.0.0-20181127172603-01833bdc7323
 	github.com/sirupsen/logrus v1.2.0
 	golang.org/x/net v0.0.0-20181114220301-adae6a3d119a

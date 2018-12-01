@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
@@ -88,10 +89,12 @@ func main() {
 		log.Fatalf("Unable to retrieve Drive client: %v", err)
 	}
 
+	// List folders in the '10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1' and name contains 'region01'
 	r, err := srv.Files.List().
-		Q("mimeType='application/vnd.google-apps.folder' AND '10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1' in parents").
+		Q("mimeType='application/vnd.google-apps.folder' AND '10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1' in parents AND name contains 'region01'").
 		Spaces("drive").
 		Fields("nextPageToken, files(id, name, mimeType)").
+		OrderBy("name desc").
 		Do()
 	if err != nil {
 		log.Fatalf("Unable to retrieve files: %v", err)
@@ -104,4 +107,31 @@ func main() {
 			fmt.Printf("%s (%s) [%s]\n", i.Name, i.Id, i.MimeType)
 		}
 	}
+}
+
+func createFolderAndFile(srv *drive.Service) {
+	// Create a folder.
+	f := drive.File{
+		Name:     "region1",
+		Parents:  []string{"10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1"},
+		MimeType: "application/vnd.google-apps.folder",
+	}
+	folder, err := srv.Files.Create(&f).Do()
+	if err != nil {
+		log.Fatalf("Unable to create files: %v", err)
+	}
+	log.Printf("folder %#v", *folder)
+
+	// Create a file.
+	lg := drive.File{
+		Name:     "1_1", // term 1, index 1
+		Parents:  []string{folder.Id},
+		MimeType: "application/octet-stream",
+	}
+	logF, err := srv.Files.Create(&lg).
+		Media(strings.NewReader("this is a raft log")).Do()
+	if err != nil {
+		log.Fatalf("Unable to create files: %v", err)
+	}
+	log.Printf("file %#v", *logF)
 }

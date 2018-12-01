@@ -5,12 +5,16 @@ import (
 	"io"
 
 	"github.com/overvenus/tidbongoogle/pkg/googleutil"
+	"github.com/overvenus/tidbongoogle/pkg/util"
 	"github.com/pingcap/kvproto/pkg/enginepb"
 	log "github.com/sirupsen/logrus"
 )
 
 // Config is Config of the engine service.
 type Config struct {
+	// Report interval
+	ReportInterval util.Duration `toml:"report-interval"`
+
 	// The ID of a drive fold that store all region data.
 	DriveRootID string `toml:"drive-root-id"`
 	// Google config
@@ -18,44 +22,40 @@ type Config struct {
 }
 
 type srv struct {
-	ctx        context.Context
-	cfg        *Config
-	regionCh   chan uint64
-	cmdBatchCh chan *enginepb.CommandRequestBatch
+	ctx       context.Context
+	app       *Applier
+	cmdReqCh  chan<- *enginepb.CommandRequestBatch
+	cmdRespCh <-chan *enginepb.CommandResponseBatch
 }
 
 // CreateEngineService creats an engine service.
-func CreateEngineService(ctx context.Context, cfg *Config) enginepb.EngineServer {
+func CreateEngineService(ctx context.Context, applier *Applier) enginepb.EngineServer {
 	s := new(srv)
 	s.ctx = ctx
-	s.cfg = cfg
-	s.regionCh = make(chan uint64, 8)
-	s.cmdBatchCh = make(chan *enginepb.CommandRequestBatch, 8)
-	s.start()
+	s.app = applier
+	s.cmdReqCh = s.app.RequestBatchChannel()
+	s.cmdRespCh = s.app.ResponseBatchChannel()
 	return s
 }
 
-func (s *srv) start() error {
+func (s *srv) ApplyCommandBatch(cmds enginepb.Engine_ApplyCommandBatchServer) error {
+	actx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+
 	go func() {
 		for {
 			select {
-			case regionID := <-s.regionCh:
-				// TODO: craete a dir in google drive
-				_ = regionID
-			case batch := <-s.cmdBatchCh:
-				for _, cmd := range batch.Requests {
-					header := cmd.GetHeader()
-					regionID := header.RegionId
-					_ = regionID
-					// TODO: post cmd to its dir.
-				}
+			case resp := <-s.cmdRespCh:
+				// Forward response from applier to gRPC peer.
+				log.Infof("sending apply responses")
+				cmds.Send(resp)
+				log.Infof("sent apply responses")
+			case <-actx.Done():
+				log.Infof("close server send half")
+				return
 			}
 		}
 	}()
-	return nil
-}
-
-func (s *srv) ApplyCommandBatch(cmds enginepb.Engine_ApplyCommandBatchServer) error {
 	for {
 		batch, err := cmds.Recv()
 		if err != nil {
@@ -66,31 +66,42 @@ func (s *srv) ApplyCommandBatch(cmds enginepb.Engine_ApplyCommandBatchServer) er
 			log.Errorf("recv commands batch error: %v", err)
 			return err
 		}
-		s.cmdBatchCh <- batch
+		// Send request batch to applier.
+		log.Infof("scheduling apply requests")
+		s.cmdReqCh <- batch
+		log.Infof("scheduled apply requests")
 	}
 }
 
 func (s *srv) ApplySnapshot(snaps enginepb.Engine_ApplySnapshotServer) error {
+	snap := s.app.NewSnapper()
 	var state *enginepb.SnapshotState
-	data := make([]*enginepb.SnapshotData, 0, 32)
+	var regionID uint64
 	for {
 		chunk, err := snaps.Recv()
 		if err != nil {
 			if err == io.EOF {
+				// Okay, we have all snapshot data.
 				break
 			}
 			log.Fatalf("recv snapshot chunk error: %v", err)
 		}
 		if state == nil {
 			state = chunk.GetState()
+			regionID = state.Region.Id
+			err = snap.HandleSnapshotState(state)
+			if err != nil {
+				log.Errorf("[region %d] fail to apply snapshot state", regionID)
+			}
 		} else {
-			data = append(data, chunk.GetData())
+			err = snap.HandleSnapshotData(chunk.GetData())
+			if err != nil {
+				log.Errorf("[region %d] fail to apply snapshot data", regionID)
+			}
 		}
 	}
 
-	// TODO: Save state and data to google drive.
-
-	s.regionCh <- state.GetRegion().GetId()
-	snaps.SendAndClose(new(enginepb.SnapshotDone))
+	done := snap.Done()
+	snaps.SendAndClose(done)
 	return nil
 }
