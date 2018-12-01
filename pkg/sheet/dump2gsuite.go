@@ -3,13 +3,13 @@ package sheet
 import (
 	"time"
 
-	"github.com/overvenus/tidbongoogle/pkg/gsuite"
+	"github.com/overvenus/tidbongoogle/pkg/googleutil"
 )
 
 func (d *decoder) sync() {
 	data := d.Dump()
 	for k, v := range data {
-		gsuite.Create(k, v)
+		googleutil.CreateSheet(k, v)
 	}
 }
 
