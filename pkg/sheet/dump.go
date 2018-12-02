@@ -1,7 +1,6 @@
 package sheet
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
@@ -24,15 +23,8 @@ func (d *decoder) dumpDB(db *model.DBInfo) map[string][][]string {
 	ret := make(map[string][][]string)
 	for _, tb := range db.Tables {
 		func(db *model.DBInfo, tb *model.TableInfo) {
-			fi, err := os.OpenFile(fmt.Sprintf("%s.%s.csv", db.Name.O, tb.Name.O), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
-			if err != nil {
-				log.Errorf("Failed to open file to write: %v", err)
-				return
-			}
-			defer fi.Close()
 			t := d.dumpTableString(tb)
 			ret[tb.Name.O] = t
-			dumpCSV(t, fi)
 		}(db, tb)
 	}
 	return ret
