@@ -3,6 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gogo/protobuf/proto"
@@ -25,6 +30,7 @@ type snapshot struct {
 	peerID       uint64
 	appliedIndex uint64
 	appliedTerm  uint64
+	recvts       int64
 	// root folder id of a region
 	regionFolderID string
 }
@@ -38,6 +44,8 @@ type regionStore struct {
 	regionFolderID string
 	// snapshot folder id of a region
 	snapFolderID string
+
+	buffer *enginepb.CommandRequestBatch
 
 	// applied (saved) index
 	appiledIndex uint64
@@ -68,6 +76,12 @@ func (store *regionStore) makeResponse() *enginepb.CommandResponse {
 			// TOOD: for now, we just ignore truncate state.
 		},
 		AppliedTerm: store.appliedTerm,
+	}
+}
+
+func (store *regionStore) clear() {
+	store.buffer = &enginepb.CommandRequestBatch{
+		Requests: make([]*enginepb.CommandRequest, 0),
 	}
 }
 
@@ -115,11 +129,11 @@ func (app *Applier) start() error {
 	log.Info("starting applier ...")
 	driveCli := googleutil.NewDriveClient(
 		&app.cfg.Google, app.cfg.DriveRootID, app.cfg.MaxRetry)
+	app.decoder.Do()
+	app.decoder.AutoSync()
 	if err := app.restore(driveCli); err != nil {
 		return err
 	}
-	app.decoder.Do()
-	app.decoder.AutoSync()
 	go app.apply(driveCli)
 	log.Info("starting applier done")
 	return nil
@@ -142,8 +156,44 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				Responses: make([]*enginepb.CommandResponse, 0, len(app.regions)),
 			}
 			for _, store := range app.regions {
+				lterm, lindex, rid := uint64(0), uint64(0), uint64(0)
+
+				buf := store.buffer
+				for _, cmd := range buf.Requests {
+					header := cmd.GetHeader()
+					regionID := header.RegionId
+					rid = regionID
+					term := header.Term
+					index := header.Index
+					lterm, lindex = term, index
+				}
+
+				if lterm != 0 {
+					cmdName := codec.EncodeRaftLog(lterm, lindex)
+
+					b, _ := buf.Marshal()
+					logFile, err := driveCli.CreateFile(
+						cmdName, store.regionFolderID, b)
+					if err != nil {
+						log.Errorf(
+							"[region %d] fail to save raft log at index %d term %d",
+							rid, lindex, lterm)
+					} else {
+						log.Infof(
+							"[region %d] raft log at index %d term %d applied, ID: %s",
+							rid, lindex, lterm, logFile.Id)
+					}
+
+				}
+
+				if lindex != 0 {
+					store.advance(lindex, lterm)
+				}
+
 				resp := store.makeResponse()
 				respBatch.Responses = append(respBatch.Responses, resp)
+
+				store.clear()
 			}
 			app.cmdRespCh <- respBatch
 
@@ -157,15 +207,15 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				peerID: snap.peerID,
 				// root folder id of a region
 				regionFolderID: snap.regionFolderID,
+				buffer: &enginepb.CommandRequestBatch{
+					Requests: make([]*enginepb.CommandRequest, 0),
+				},
 			}
 			// applied (saved) index
 			store.advance(snap.appliedIndex, snap.appliedTerm)
 			app.regions[snap.regionID] = &store
 
 		case batch := <-app.cmdReqCh:
-			respBatch := &enginepb.CommandResponseBatch{
-				Responses: make([]*enginepb.CommandResponse, 0, len(batch.Requests)),
-			}
 			for _, cmd := range batch.Requests {
 				header := cmd.GetHeader()
 				regionID := header.RegionId
@@ -191,33 +241,22 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 				}
 
 				b, err := proto.Marshal(cmd)
+
+				tCmd := &enginepb.CommandRequest{}
+				tCmd.Unmarshal(b)
+				store.buffer.Requests = append(store.buffer.Requests, tCmd)
+
 				log.Infof("[region %d] log at term %d index %d size %d",
 					regionID, term, index, len(b))
 				if err != nil {
 					log.Warnf("[region %d] fail to marshal snapshop state", err)
 				}
-
 				app.decoder.Decode(b)
-
-				cmdName := codec.EncodeRaftLog(term, index)
-				logFile, err := driveCli.CreateFile(
-					cmdName, store.regionFolderID, b)
-				if err != nil {
-					log.Errorf(
-						"[region %d] fail to save raft log at index %d term %d",
-						regionID, index, term)
-				} else {
-					log.Infof(
-						"[region %d] raft log at index %d term %d applied, ID: %s",
-						regionID, index, term, logFile.Id)
-				}
-				store.advance(index, term)
-
-				resp := store.makeResponse()
-				respBatch.Responses = append(respBatch.Responses, resp)
-
 			}
-			app.cmdRespCh <- respBatch
+
+			localRestoreBuffer, _ := batch.Marshal()
+			fname := fmt.Sprintf("batch_%016x.bak", time.Now().UnixNano())
+			ioutil.WriteFile(fname, localRestoreBuffer, os.ModePerm)
 		}
 	}
 }
@@ -259,6 +298,9 @@ func (app *Applier) handleSplits(
 		store.peerID = peerID
 		store.regionFolderID = regionFolder.Id
 		store.snapFolderID = snapFolder.Id
+		store.buffer = &enginepb.CommandRequestBatch{
+			Requests: make([]*enginepb.CommandRequest, 0),
+		}
 		store.advance(raftInitLogIndex, raftInitLogTerm)
 		app.regions[region.Id] = store
 	}
@@ -276,10 +318,45 @@ func (app *Applier) handleSplits(
 // ```
 func (app *Applier) restore(driveCli *googleutil.DriveClient) error {
 	log.Info("restore region apply state ...")
+	// load local files
+	localFiles := make([]string, 0)
+	filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Printf("prevent panic by handling failure accessing a path %q: %v\n", path, err)
+			return err
+		}
+		if path != "." && info.IsDir() {
+			return filepath.SkipDir
+		}
+		if strings.HasPrefix(info.Name(), "batch_") && strings.HasSuffix(info.Name(), ".bak") {
+			localFiles = append(localFiles, info.Name())
+		}
+		return nil
+	})
+	sort.Strings(localFiles)
+
+	log.Infof("%d local batch backup files!", len(localFiles))
+
+	for _, v := range localFiles {
+		buf, err := ioutil.ReadFile(v)
+		if err != nil {
+			log.Errorf("Failed to read local file: %v", err)
+		}
+		tBatch := &enginepb.CommandRequestBatch{}
+		proto.Unmarshal(buf, tBatch)
+		for _, cmd := range tBatch.Requests {
+			b, _ := proto.Marshal(cmd)
+			app.decoder.Decode(b)
+		}
+	}
+	//
+	log.Info("restore local files done!")
+
 	flist, err := driveCli.ListFolder(app.cfg.DriveRootID, 0)
 	if err != nil {
 		return err
 	}
+
 	for _, f := range flist.Files {
 		regionID, peerID, err := codec.DecodeRegionFolder(f.Name)
 		if err != nil {
@@ -290,6 +367,9 @@ func (app *Applier) restore(driveCli *googleutil.DriveClient) error {
 			id:             regionID,
 			peerID:         peerID,
 			regionFolderID: f.Id,
+			buffer: &enginepb.CommandRequestBatch{
+				Requests: make([]*enginepb.CommandRequest, 0),
+			},
 		}
 		// Restore applied index.
 		// Order by name desc, the first one is the snap folder and the second

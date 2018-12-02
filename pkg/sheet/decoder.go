@@ -45,6 +45,12 @@ func decode(b []byte) ([]byte, error) {
 	return data, err
 }
 
+func (d *decoder) takeSnapshot() []byte {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	return []byte{}
+}
+
 func (d *decoder) decodeCmd(cmd *raft_cmdpb.Request) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
@@ -64,9 +70,13 @@ func (d *decoder) decodeCmd(cmd *raft_cmdpb.Request) {
 		//log.Infof("%s / %x", string(k), k)
 
 		if bytes.HasPrefix(k, []byte("mDB")) {
-			key, _, err := decodeHashDataKey(k)
+			key, _, tp, err := decodeHashDataKey(k)
 			if err != nil {
 				log.Warnf("Failed to decode key: %v, key = %s, len(key) = %d", err, k, len(k))
+				break
+			}
+			if tp != 'h' {
+				// as for mDBxxxxxxx, we only decode hash data
 				break
 			}
 			k = key
@@ -79,8 +89,39 @@ func (d *decoder) decodeCmd(cmd *raft_cmdpb.Request) {
 		strKey := string(k)
 		if cmd.Put.Cf == "write" {
 			// deal with short value
-			return
+			log.Infof("write cf %x / %x", k, v)
+
+			v, _, err = codec.DecodeVarint(v[1:])
+
+			if err != nil {
+				log.Warnf("failed to decode write cf value: %v", err)
+				return
+			}
+
+			if len(v) == 0 {
+				// ok, not short value
+				return
+			}
+
+			// value in write contains a short value
+
+			vflg := v[0]
+			switch vflg {
+			case 'v':
+				log.Debugf("Find short value flag")
+			default:
+				log.Errorf("Cannot read flag: %x (@key = %x, val = %x)", vflg, k, v)
+				return
+			}
+			vlen := int(v[1])
+			if int(vlen)+2 != len(v) {
+				log.Warnf("short value len not equal to content len! key = %x, val = %x", k, v)
+				return
+			}
+			v = v[2:]
+
 		} else if cmd.Put.Cf != "" {
+			// infact, ignore lock cf only
 			return
 		}
 		if strKey == "DBs" {

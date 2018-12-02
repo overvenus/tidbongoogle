@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"flag"
+	"math/rand"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/overvenus/tidbongoogle/pkg/googleutil"
 
 	"github.com/BurntSushi/toml"
-	"github.com/overvenus/tidbongoogle/pkg/gsuite"
 	"github.com/overvenus/tidbongoogle/pkg/service"
 	"github.com/pingcap/kvproto/pkg/enginepb"
 	log "github.com/sirupsen/logrus"
@@ -25,6 +26,10 @@ var (
 	pprofAddr = flag.String("pprof", "0.0.0.0:6060", "Pprof address")
 	cfgFile   = flag.String("cfg", "conf/config.toml", "config file")
 )
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
 
 func main() {
 	flag.Parse()
@@ -39,7 +44,8 @@ func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	gsuite.InitGClient(googleutil.NewDriveClient(&cfg.Google, cfg.DriveRootID, 5))
+	googleutil.Initsheet(&cfg.Google)
+	googleutil.InitGClient(googleutil.NewDriveClient(&cfg.Google, cfg.DriveRootID, 5))
 
 	go func() {
 		s := <-sigs

@@ -34,7 +34,7 @@ func encodeHashDataKey(key []byte, field []byte) kv.Key {
 	return codec.EncodeBytes(ek, field)
 }
 
-func decodeHashDataKey(ek []byte) ([]byte, []byte, error) {
+func decodeHashDataKey(ek []byte) ([]byte, []byte, uint8, error) {
 	var (
 		key   []byte
 		field []byte
@@ -43,21 +43,34 @@ func decodeHashDataKey(ek []byte) ([]byte, []byte, error) {
 	)
 
 	if !bytes.HasPrefix(ek, []byte{'m'}) {
-		return nil, nil, errors.New("invalid encoded hash data key prefix")
+		return nil, nil, 0, errors.New("invalid encoded hash data key prefix")
 	}
 
 	ek = ek[1:]
 
 	ek, key, err = codec.DecodeBytes(ek, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	ek, tp, err = codec.DecodeUint(ek)
 	if err != nil {
-		return nil, nil, fmt.Errorf("invalid encoded hash data key flag %c", byte(tp))
+		return nil, nil, 0, fmt.Errorf("invalid encoded hash data key flag %c", byte(tp))
 	}
 
-	_, field, err = codec.DecodeBytes(ek, nil)
-	return key, field, err
+	switch tp {
+	case 'S', 's', 'H', 'L':
+		return key, nil, uint8(tp & 0xff), nil
+	case 'h':
+		_, field, err = codec.DecodeBytes(ek, nil)
+		return key, field, 'h', err
+	case 'l':
+		_, fieldInt, err := codec.DecodeUint(ek)
+		field := codec.EncodeUint(field, fieldInt)
+		return key, field, 'l', err
+	default:
+		return nil, nil, 0, fmt.Errorf("Failed to decode key, undefined type: %x", uint8(tp&0xFF))
+	}
+
+	return nil, nil, 0, fmt.Errorf("???")
 }
