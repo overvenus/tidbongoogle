@@ -1,0 +1,9 @@
+language: go
+
+go_import_path: github.com/overvenus/tidbongoogle
+
+go:
+  - "1.11"
+
+script:
+  - go test ./...
