@@ -130,7 +130,7 @@ func (d *decoder) decodeCmd(cmd *raft_cmdpb.Request) {
 			log.Debugf("Value = %s", string(v))
 			dbmeta := &model.DBInfo{}
 			if err := json.Unmarshal(v, dbmeta); err != nil {
-				log.Errorf("Failed to decode value: %v", err)
+				log.Infof("Data is not a DBInfo json: %v", err)
 			}
 			log.Infof("DB name: %s", dbmeta.Name.O)
 			d.schema[dbmeta.ID] = dbmeta
