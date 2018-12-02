@@ -139,6 +139,68 @@ func (app *Applier) start() error {
 	return nil
 }
 
+func (app *Applier) sync(driveCli *googleutil.DriveClient, syncIds []uint64) {
+	log.Infof("time to report applied state")
+
+	respBatch := &enginepb.CommandResponseBatch{
+		Responses: make([]*enginepb.CommandResponse, 0, len(app.regions)),
+	}
+
+	if len(syncIds) == 0 {
+		for k, _ := range app.regions {
+			syncIds = append(syncIds, k)
+		}
+	}
+
+	for _, k := range syncIds {
+		store, ok := app.regions[k]
+		if !ok {
+			log.Errorf("Region %d not exist?", k)
+			continue
+		}
+
+		lterm, lindex, rid := uint64(0), uint64(0), uint64(0)
+
+		buf := store.buffer
+		for _, cmd := range buf.Requests {
+			header := cmd.GetHeader()
+			regionID := header.RegionId
+			rid = regionID
+			term := header.Term
+			index := header.Index
+			lterm, lindex = term, index
+		}
+
+		if lterm != 0 {
+			cmdName := codec.EncodeRaftLog(lterm, lindex)
+
+			b, _ := buf.Marshal()
+			logFile, err := driveCli.CreateFile(
+				cmdName, store.regionFolderID, b)
+			if err != nil {
+				log.Errorf(
+					"[region %d] fail to save raft log at index %d term %d",
+					rid, lindex, lterm)
+			} else {
+				log.Infof(
+					"[region %d] raft log at index %d term %d applied, ID: %s",
+					rid, lindex, lterm, logFile.Id)
+			}
+
+		}
+
+		if lindex != 0 {
+			store.advance(lindex, lterm)
+		}
+
+		resp := store.makeResponse()
+		respBatch.Responses = append(respBatch.Responses, resp)
+
+		store.clear()
+	}
+	app.cmdRespCh <- respBatch
+}
+
 func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 	ticker := time.NewTicker(app.cfg.ReportInterval.Duration)
 
@@ -148,55 +210,7 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 			log.Infof("applier quit ...")
 			return
 		case <-ticker.C:
-			log.Infof("time to report applied state")
-			if len(app.regions) == 0 {
-				continue
-			}
-			respBatch := &enginepb.CommandResponseBatch{
-				Responses: make([]*enginepb.CommandResponse, 0, len(app.regions)),
-			}
-			for _, store := range app.regions {
-				lterm, lindex, rid := uint64(0), uint64(0), uint64(0)
-
-				buf := store.buffer
-				for _, cmd := range buf.Requests {
-					header := cmd.GetHeader()
-					regionID := header.RegionId
-					rid = regionID
-					term := header.Term
-					index := header.Index
-					lterm, lindex = term, index
-				}
-
-				if lterm != 0 {
-					cmdName := codec.EncodeRaftLog(lterm, lindex)
-
-					b, _ := buf.Marshal()
-					logFile, err := driveCli.CreateFile(
-						cmdName, store.regionFolderID, b)
-					if err != nil {
-						log.Errorf(
-							"[region %d] fail to save raft log at index %d term %d",
-							rid, lindex, lterm)
-					} else {
-						log.Infof(
-							"[region %d] raft log at index %d term %d applied, ID: %s",
-							rid, lindex, lterm, logFile.Id)
-					}
-
-				}
-
-				if lindex != 0 {
-					store.advance(lindex, lterm)
-				}
-
-				resp := store.makeResponse()
-				respBatch.Responses = append(respBatch.Responses, resp)
-
-				store.clear()
-			}
-			app.cmdRespCh <- respBatch
-
+			app.sync(driveCli, []uint64{})
 		case snap := <-app.snapCh:
 			// We have created a region folder in google drive,
 			// then we add the region to regions map.
@@ -216,6 +230,10 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 			app.regions[snap.regionID] = &store
 
 		case batch := <-app.cmdReqCh:
+			localRestoreBuffer, _ := batch.Marshal()
+			fname := fmt.Sprintf(".batch_%016x.bak", time.Now().UnixNano())
+			ioutil.WriteFile(fname, localRestoreBuffer, os.ModePerm)
+
 			for _, cmd := range batch.Requests {
 				header := cmd.GetHeader()
 				regionID := header.RegionId
@@ -252,11 +270,10 @@ func (app *Applier) apply(driveCli *googleutil.DriveClient) {
 					log.Warnf("[region %d] fail to marshal snapshop state", err)
 				}
 				app.decoder.Decode(b)
+				if header.SyncLog {
+					app.sync(driveCli, []uint64{regionID})
+				}
 			}
-
-			localRestoreBuffer, _ := batch.Marshal()
-			fname := fmt.Sprintf("batch_%016x.bak", time.Now().UnixNano())
-			ioutil.WriteFile(fname, localRestoreBuffer, os.ModePerm)
 		}
 	}
 }
@@ -328,7 +345,7 @@ func (app *Applier) restore(driveCli *googleutil.DriveClient) error {
 		if path != "." && info.IsDir() {
 			return filepath.SkipDir
 		}
-		if strings.HasPrefix(info.Name(), "batch_") && strings.HasSuffix(info.Name(), ".bak") {
+		if strings.HasPrefix(info.Name(), ".batch_") && strings.HasSuffix(info.Name(), ".bak") {
 			localFiles = append(localFiles, info.Name())
 		}
 		return nil
