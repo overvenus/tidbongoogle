@@ -157,7 +157,7 @@ func (d *decoder) decodeCmd(cmd *raft_cmdpb.Request) {
 			if !bytes.HasPrefix(k, []byte("_r")) {
 				break
 			}
-			k, rowID, err := codec.DecodeInt(k[1:])
+			k, rowID, err := codec.DecodeInt(k[2:])
 			if err != nil {
 				log.Warnf("Failed to decode key: %v", err)
 				break
