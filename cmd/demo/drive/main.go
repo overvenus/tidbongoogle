@@ -89,6 +89,8 @@ func main() {
 		log.Fatalf("Unable to retrieve Drive client: %v", err)
 	}
 
+	createFolderAndFile(srv)
+
 	// List folders in the '10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1' and name contains 'region01'
 	r, err := srv.Files.List().
 		Q("mimeType='application/vnd.google-apps.folder' AND '10gAmy_B6qZvz9ZgUvYOguk5eQlzU0Gj1' in parents AND name contains 'region01'").
